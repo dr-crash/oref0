@@ -318,7 +318,7 @@ function preflight {
     echo -n "Preflight "
     # only 515, 522, 523, 715, 722, 723, 554, and 754 pump models have been tested with SMB
     ( openaps report invoke settings/model.json || openaps report invoke settings/model.json ) 2>&1 >/dev/null | tail -1 \
-    && egrep -q "[57](15|22|23|54)" settings/model.json \
+    && ( egrep -q "[57](15|22|23|54)" settings/model.json || (echo -n "error: pump model untested with SMB: "; false) ) \
     && echo -n "OK. " \
     || ( echo -n "fail. "; false )
 }
@@ -394,7 +394,8 @@ function wait_for_silence {
 function gather {
     openaps report invoke monitor/status.json 2>&1 >/dev/null | tail -1 \
     && echo -n Ref \
-    && ( test $(cat monitor/status.json | json suspended) == true || \
+    && ( grep -q "model.*12" monitor/status.json || \
+         test $(cat monitor/status.json | json suspended) == true || \
          test $(cat monitor/status.json | json bolusing) == false ) \
     && echo -n resh \
     && ( openaps monitor-pump || openaps monitor-pump ) 2>&1 >/dev/null | tail -1 \
@@ -429,9 +430,9 @@ function refresh_old_pumphistory_enact {
     || ( echo -n "Old pumphistory: " && gather && enact )
 }
 
-# refresh pumphistory if it's more than 15m old, but don't enact
+# refresh pumphistory if it's more than 30m old, but don't enact
 function refresh_old_pumphistory {
-    find monitor/ -mmin -15 -size +100c | grep -q pumphistory-zoned \
+    find monitor/ -mmin -30 -size +100c | grep -q pumphistory-zoned \
     || ( echo -n "Old pumphistory, waiting for $upto30s seconds of silence: " && wait_for_silence $upto30s && gather )
 }
 
@@ -454,7 +455,9 @@ function refresh_smb_temp_and_enact {
     setglucosetimestamp
     # only smb_enact_temp if we haven't successfully completed a pump_loop recently
     # (no point in enacting a temp that's going to get changed after we see our last SMB)
-    if ( find monitor/ -mmin +10 | grep -q monitor/pump_loop_completed ); then
+    if (cat monitor/temp_basal.json | json -c "this.duration > 20" | grep -q duration); then
+        echo -n "Temp duration >20m. "
+    elif ( find monitor/ -mmin +10 | grep -q monitor/pump_loop_completed ); then
         echo "pump_loop_completed more than 10m ago: setting temp before refreshing pumphistory. "
         smb_enact_temp
     else
@@ -482,7 +485,7 @@ function refresh_pumphistory_and_enact {
     setglucosetimestamp
     if ((find monitor/ -newer monitor/pumphistory-zoned.json | grep -q glucose.json && echo -n "glucose.json newer than pumphistory. ") \
         || (find enact/ -newer monitor/pumphistory-zoned.json | grep -q enacted.json && echo -n "enacted.json newer than pumphistory. ") \
-        || (! find monitor/ -mmin -5 | grep -q pumphistory-zoned && echo -n "pumphistory more than 5m old. ") ); then
+        || ((! find monitor/ -mmin -5 | grep -q pumphistory-zoned || ! find monitor/ -mmin +0 | grep -q pumphistory-zoned) && echo -n "pumphistory more than 5m old. ") ); then
             (echo -n ": " && gather && enact )
     else
         echo Pumphistory less than 5m old
